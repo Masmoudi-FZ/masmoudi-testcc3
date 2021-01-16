@@ -1,0 +1,323 @@
+---
+title: "cc3_ecog2"
+output:
+   github_document:
+     toc: true
+     toc_depth: 2
+---
+
+#Introduction
+L'objectif de cette étude est de révéler le microbiome tumoral de cohortes indépendantes de patients attiends de PDAC à partir des deux établissements de soins differents(MADCC et JHH)  en étudiant les survivants à long terme et à court terme pour étudier et mieux comprendre les influences liées à l'hôte qui pourraient guider cette survie à long terme inhabituelle.
+
+
+
+# Dada2
+```{r message=FALSE, warning=FALSE}
+library("rmarkdown")
+library("knitr")
+```
+
+
+
+```{r message=FALSE, warning=FALSE}
+library(dada2)
+library(ggplot2)
+library(gridExtra)
+library(phyloseq)
+library(DECIPHER)
+library(phangorn)
+library(Biostrings)
+```
+
+
+```{r}
+miseq_path <- "~/CC3-article/ech_article_cc3" # CHANGE ME to the directory containing the fastq files after unzipping.
+list.files(miseq_path)
+```
+
+#decompress several fastq.gz files into one single file par unzip
+
+
+#les echantillions 
+```{r}
+fnFs <- sort(list.files(miseq_path, pattern="_1.fastq", full.names = TRUE))
+fnRs <- sort(list.files(miseq_path, pattern="_2.fastq", full.names = TRUE))
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+sample.names
+```
+
+#Visualiser les profils de qualité des lectures avant:
+
+```{r}
+plotQualityProfile(fnFs[1:2])
+```
+
+
+#visualiser le profil de qualité des lectures inversées
+
+```{r}
+plotQualityProfile(fnRs[1:2])
+```
+
+
+#Filtrer et couper
+
+```{r}
+# Place filtered files in filtered/ subdirectory
+filtFs <- file.path(miseq_path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(miseq_path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+```
+
+
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240, 100), maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=TRUE) # On Windows set multithread=FALSE
+head(out)
+```
+
+```{r message=FALSE, warning=FALSE}
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+```
+
+# Learn the Error Rates
+
+
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+```
+
+```{r}
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+#Apprener les taux d'erreur
+```{r message=FALSE, warning=FALSE}
+plotErrors(errF, nominalQ=TRUE)
+plotErrors(errR, nominalQ=TRUE)
+```
+
+```{r}
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+```
+
+```{r}
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+```
+
+```{r}
+dadaFs[[1]]
+```
+
+# Construct sequence table and remove chimeras
+
+```{r}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs)
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+```
+
+
+```{r}
+seqtabAll <- makeSequenceTable(mergers[!grepl("Mock", names(mergers))])
+table(nchar(getSequences(seqtabAll)))
+```
+
+# Remove chimeras
+```{r}
+seqtabNoC <- removeBimeraDenovo(seqtabAll)
+```
+
+# Track reads through the pipeline
+
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtabNoC))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+# Assign taxonomy
+```{r}
+taxa <- assignTaxonomy(seqtabNoC, "~/CC3-article/silva_nr99_v138_train_set.fa.gz", multithread=TRUE)
+```
+
+```{r}
+taxa <- addSpecies(taxa, "~/CC3-article/silva_species_assignment_v138.fa.gz")
+```
+
+
+```{r}
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+# Combine data into a phyloseq object
+
+#metada-table
+```{r}
+samdf <-read.table('~/CC2_Ecog2-FZM/samdf.csv', sep=',', header=TRUE, row.names=1)
+```
+
+
+
+```{r}
+ps <- phyloseq(otu_table(seqtabNoC, taxa_are_rows=FALSE), 
+               sample_data(samdf), 
+               tax_table(taxa))
+ps
+```
+#Visualisez la diversité alpha par (Shannon et Simpson réciproque) dans les cohortes MDACC et JHH de patients PDAC.
+```{r message=FALSE, warning=FALSE}
+plot_richness(ps, x="cohort", measures=c("Observed_species", "Shannon", "Simpson"), color="survival_status")
+```
+
+Cette figure montre les résultats de la mesure de la diversité microbienne de la tumeur des 68 tumeurs PDAC réséquées chirurgicalement (36 LTS et 32 STS)en utilisant différentes méthodologies ( Indices de Shannon et Simpson) et ils ont constaté que la diversité alpha du microbiome tumoral, définie comme le nombre d'espèces présentes dans chaque échantillon de tumeur, était significativement plus élevée chez les patients LTS que chez STS dans la cohorte découverte MDACC ( p <0,0005, p <0,0005 et p<0,05, pour chaque indice de diversité alpha, respectivement) et la cohorte de validation JHH ( p <0,005, p <0,005 et p <0,005, pour chaque indice de diversité alpha, respectivement), donc on peut conclue qu'il existe une relation entre la diversité microbienne de la tumeur PDAC et la survie globale (SG) dans la cohorte.
+
+
+
+#taxonomie filtring
+
+```{r}
+rank_names(ps)
+```
+
+
+```{r}
+table(tax_table(ps)[, "Phylum"], exclude = NULL)
+```
+
+```{r}
+ps <- subset_taxa(ps, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+```
+
+
+```{r}
+# Compute prevalence of each feature, store as data.frame
+prevdf = apply(X = otu_table(ps),
+               MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+# Add taxonomy and total read counts to this data.frame
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps),
+                    tax_table(ps))
+```
+
+
+```{r}
+plyr::ddply(prevdf, "Phylum", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+```
+
+#Prevalence Filtering
+```{r}
+# Subset to the remaining phyla
+prevdf1 = subset(prevdf, Phylum %in% get_taxa_unique(ps, "Phylum"))
+ggplot(prevdf1, aes(TotalAbundance, Prevalence / nsamples(ps),color=Phylum)) +
+  # Include a guess for parameter
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+```
+
+
+
+
+```{r}
+ggsave("pcoa.jpg", width = 250, height = 100, units = "mm")
+```
+
+
+```{r}
+pslog <- transform_sample_counts(ps, function(x) log(1 + x))
+out.wuf.log <- ordinate(pslog, method = "PCoA", distance = "bray")
+```
+
+# Analyse des coordonnées principales (PCoA) en utilisant UniFrad non pondéré de la diversité bêta et les distances métriques de Bray-Curtis de diversité bêta.
+
+```{r}
+evals <- out.wuf.log$values$Eigenvalues
+plot_ordination(pslog, out.wuf.log, color = "survival_status", shape="cohort") +
+  labs(col = "survival_status",shape= "cohort")
+```
+
+Cette figure présente une Matrice PCoA de la diversité bêta, une similarité entre les OTU de LTS et STS des deux échantillons car les communautés sont relativement proches et que chaque couleur est présente dans les deux échantillons ce qui est confirmé par l’indice Bray-Curtis qui tend vers 0 et en fonction du temps de la survie des patients il n’y a pas de différences significatives en les OTU des deux échantillons.
+
+
+
+```{r}
+ggsave("pcoa.jpg", width = 150, height = 100, units = "mm")
+```
+
+
+
+#Diagrammes à barres des niveaux taxonomiques de classe dans les cohortes MDA et JHH de patients PDAC. L'abondance relative est tracée pour chaque tumeur.
+
+```{r}
+top20 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:20]
+ps.top20 <- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+ps.top20 <- prune_taxa(top20, ps.top20)
+plot_bar(ps.top20, x="echant", fill="Class") + facet_wrap(~cohort, scales="free_x")
+```
+A partir de la figure des diagrammes en barres des niveaux taxonomiques de classe dans les cohortes de patients atteints de PDAC, elle montre l’abondance relative de 17 isolats de bactéries similaires au microbiome tumoral PDAC LTS et la STS. L’abondance de Gammaproteobacteria, Bacilli, Actinobacteria et les Clostridia, est Importante dans les deux Echantillons (MDACC et JHH),  ce qui indique que les caractéristiques taxonomiques ne sont pas significativement différenciées entre les deux cohorts.
+
+
+
+
+#LDA score computed from features differentially abundant between LTS and STS. The criteria for feature selection is Log LDA Score > 4
+
+### erreur qu'on a pas pu résoudre 
+library(MASS)
+# Fit the model
+model <- lda(x,data = samdf)
+# Make predictions
+predictions <- model %>% predict(test.transformed)
+# Model accuracy
+mean(predictions$class==test.transformed$Species)
+###
+
+la figure de LDA score presente une analyse pour la classification et la comparaison à haute dimension, et ont constaté qu'il existe une différence significative entre la dominance de la communauté bactérienne entre LTS et STS. Les tumeurs LTS montrent principalement des Alphaprotebacteria Sphingobacteria et Flavobacteria au niveau de la classe. Au contraire, au niveau de la classe, Clostridium et Bacteroides dominent les cas STS PDAC.
+
+
+
+#Heatmap of selected most differentially abundant features at the genus level. 
+```{r}
+row.names(samdf) <- samdf$Name
+```
+
+
+
+```{r}
+samdf <- samdf[,2:20]
+```
+
+
+```{r}
+samdf_matrix <- data.matrix(samdf)
+```
+
+### erreur N°2
+samdf_heatmap <- heatmap(samdf_matrix, Rowv="Class", Colv="survival_status", col = cm.colors(256), scale="column", margins=c(5,10),  xlab = "survival_status", ylab =  "Class")
+###
+
+La carte thermique présente une ségrégation différentielle des communautés taxonomiques en fonction de la survie des patients PDAC, avec quoi la visualisation de la ségrégation différentielle des communautés taxonomiques en fonction de la survie des patients PDAC. Les LTS ont montré une dominance de trois genres : Pseudoxanthomonas et Saccharopolyspora et Streptomyces, alors que les STS n’y ont pas de détection d’un genre prédominant.
+
+
+
+
+#Conclusion
+
+les résultats de cette recherche ont montré des caractéristiques taxonomiques microbiens speciales dététctés chez les survivants du cancer du pancréas à long terme par rapport aux patients qui ont une courte survie, ce qui pourrait être utilisé pour pré-analyser la survie de la PDAC chez l'homme, et afin de faire la métastase du microbiome intestinal à longue durée de vie pour modifier le microbiome tumoral chez les patients.
+
+
+
+
+
+
+
+
+
+
