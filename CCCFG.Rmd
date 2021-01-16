@@ -1,0 +1,16 @@
+---
+title: "cHG2"
+output:
+   github_document:
+     toc: true
+     toc_depth: 2
+---
+
+
+```{r}
+miseq_path <- "~/CC3-article/ech_article_cc3" # CHANGE ME to the directory containing the fastq files after unzipping.
+list.files(miseq_path)
+```
+
+
+
